@@ -8,6 +8,7 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
 
@@ -192,10 +193,50 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 @media (max-width: 600px) {
   .header, .tabbar, .content { padding-left: 14px; padding-right: 14px; }
 }
+
+/* ---- Login ---- */
+#login-overlay {
+  position: fixed; inset: 0; z-index: 9999;
+  background: var(--bg);
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px;
+}
+.login-card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  padding: 32px 28px; width: 100%; max-width: 360px;
+}
+.login-card .logo { margin: 0 auto 16px auto; }
+.login-card h1 {
+  font-family: 'Barlow Condensed', sans-serif; text-transform: uppercase;
+  font-size: 22px; font-weight: 600; margin: 0 0 4px 0; text-align: center;
+}
+.login-card p.sub { color: var(--text-muted); font-family: 'IBM Plex Mono', monospace; font-size: 12px; text-align: center; margin: 0 0 22px 0; }
+.login-card label { color: var(--text-muted); font-family: 'IBM Plex Mono', monospace; font-size: 11px; text-transform: uppercase; display: block; margin-bottom: 4px; }
+.login-card input { width: 100%; margin-bottom: 14px; }
+.login-card button { width: 100%; justify-content: center; padding: 11px; font-size: 15px; }
+.login-error { color: #E4785C; font-size: 13px; margin: 4px 0 12px 0; min-height: 16px; }
+#app-wrap { display: none; }
 </style>
 </head>
 <body>
 
+<div id="login-overlay">
+  <div class="login-card">
+    <div class="logo">🚚</div>
+    <h1>Panel de Retiros</h1>
+    <p class="sub">Acceso restringido</p>
+    <form id="login-form">
+      <label for="login-email">Email</label>
+      <input type="email" id="login-email" autocomplete="username" placeholder="tu@correo.com" required>
+      <label for="login-pass">Contraseña</label>
+      <input type="password" id="login-pass" autocomplete="current-password" placeholder="••••••••" required>
+      <div class="login-error" id="login-error"></div>
+      <button type="submit" class="btn-accent" id="login-btn">Entrar</button>
+    </form>
+  </div>
+</div>
+
+<div id="app-wrap">
 <div class="header">
   <div class="header-left">
     <div class="logo">🚚</div>
@@ -210,11 +251,13 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
     <input type="file" id="import-file" accept="application/json,.json" style="display:none;">
     <span class="save-note" id="cloud-note" style="color: var(--text-muted);">Conectando...</span>
     <span class="save-note" id="save-note" style="display:none;">Guardado local en este navegador</span>
+    <button class="btn-outline" id="logout-btn" style="font-size:12px; padding:6px 10px;">Salir</button>
   </div>
 </div>
 
 <div class="tabbar" id="tabbar"></div>
 <div class="content" id="content"></div>
+</div>
 
 <script>
 // ---------- Datos semilla ----------
@@ -254,14 +297,17 @@ const FIREBASE_CONFIG = {
 
 const STORAGE_KEY = "panel-retiros-data-v1";
 let db = null;
+let auth = null;
 let firebaseReady = false;
 let unsubscribeSnapshot = null;
 
 function tryInitFirebase() {
   if (FIREBASE_CONFIG.apiKey === "PEGAR_AQUI") return false;
+  if (firebaseReady) return true;
   try {
     firebase.initializeApp(FIREBASE_CONFIG);
     db = firebase.firestore();
+    auth = firebase.auth();
     firebaseReady = true;
     return true;
   } catch (e) {
@@ -1508,7 +1554,64 @@ document.getElementById("import-file").onchange = (e) => {
 };
 
 document.getElementById("today-date").textContent = new Date().toLocaleDateString("es-AR", { weekday: "long", day: "numeric", month: "long" });
-initData();
+
+// ---------- Autenticación / acceso ----------
+const loginOverlay = document.getElementById("login-overlay");
+const appWrap = document.getElementById("app-wrap");
+let appStarted = false;
+
+function startAppOnce() {
+  if (appStarted) return;
+  appStarted = true;
+  initData();
+}
+
+function traducirErrorAuth(code) {
+  switch (code) {
+    case "auth/invalid-email": return "El email no es válido.";
+    case "auth/user-not-found":
+    case "auth/wrong-password":
+    case "auth/invalid-credential": return "Email o contraseña incorrectos.";
+    case "auth/too-many-requests": return "Demasiados intentos fallidos. Esperá un momento.";
+    case "auth/network-request-failed": return "Sin conexión a internet.";
+    default: return "No se pudo entrar. Reintentá.";
+  }
+}
+
+if (!tryInitFirebase()) {
+  // Firebase no configurado: sin login, modo local (respaldo)
+  loginOverlay.style.display = "none";
+  appWrap.style.display = "block";
+  startAppOnce();
+} else {
+  auth.onAuthStateChanged((user) => {
+    if (user) {
+      loginOverlay.style.display = "none";
+      appWrap.style.display = "block";
+      startAppOnce();
+    } else {
+      loginOverlay.style.display = "flex";
+      appWrap.style.display = "none";
+    }
+  });
+
+  document.getElementById("login-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const email = document.getElementById("login-email").value.trim();
+    const pass = document.getElementById("login-pass").value;
+    const errEl = document.getElementById("login-error");
+    const btn = document.getElementById("login-btn");
+    errEl.textContent = "";
+    btn.disabled = true; btn.textContent = "Entrando...";
+    auth.signInWithEmailAndPassword(email, pass)
+      .catch((err) => { errEl.textContent = traducirErrorAuth(err.code); })
+      .finally(() => { btn.disabled = false; btn.textContent = "Entrar"; });
+  });
+
+  document.getElementById("logout-btn").addEventListener("click", () => {
+    if (confirm("¿Cerrar sesión en este dispositivo?")) auth.signOut();
+  });
+}
 </script>
 </body>
 </html>
