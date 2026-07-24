@@ -307,6 +307,7 @@ function tryInitFirebase() {
   try {
     firebase.initializeApp(FIREBASE_CONFIG);
     db = firebase.firestore();
+    db.settings({ ignoreUndefinedProperties: true });
     auth = firebase.auth();
     firebaseReady = true;
     return true;
